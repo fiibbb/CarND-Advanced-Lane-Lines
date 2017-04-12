@@ -51,7 +51,7 @@ class LaneLine():
         self.mtx, self.dist = self.calibrate(cb_fnames, nx, ny, self.img_w, self.img_h, verbose=False)
 
         # Calculate perspective transformation matrix
-        dst_offset = 400
+        dst_offset = 300
         src_bl, src_br, src_tl, src_tr = [190,720], [1090,720], [600,440], [680,440]
         dst_bl, dst_br, dst_tl, dst_tr = [dst_offset,self.img_h], [self.img_w-dst_offset,self.img_h], [dst_offset,0], [self.img_w-dst_offset,0]
         psp_src = np.float32([src_tl, src_tr, src_br, src_bl])
@@ -96,7 +96,8 @@ class LaneLine():
         return mtx, dist
 
 
-    def hls_select(self, img, chan, thresh=(0, 255)):
+    @classmethod
+    def hls_thresh(self, img, chan=2, thresh=(0, 255)):
         hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
         channel_s = hls[:,:,chan]
         binary = np.zeros_like(channel_s)
@@ -104,6 +105,7 @@ class LaneLine():
         return binary
 
 
+    @classmethod
     def abs_thresh(self, img, ksize=3, thresh=(0,255), orient='x'):
         axis = 0 if orient == 'x' else 1
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -115,6 +117,7 @@ class LaneLine():
         return binary_output
 
 
+    @classmethod
     def mag_thresh(self, img, ksize=3, thresh=(0,255)):
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize)
@@ -126,6 +129,7 @@ class LaneLine():
         return binary_output
 
 
+    @classmethod
     def dir_thresh(self, img, ksize=3, thresh=(0, np.pi/2)):
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         abs_sobel_x = np.absolute(cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize))
@@ -253,11 +257,11 @@ class LaneLine():
 
 
     def thresh_img(self, img):
-        abs_x = self.abs_thresh(img, orient='x')
-        abs_y = self.abs_thresh(img, orient='y')
-        mag_t = self.mag_thresh(img, ksize=9, thresh=(30,100))
-        dir_t = self.dir_thresh(img)
-        return self.mag_thresh(img, ksize=9, thresh=(30,100))
+        img_abs = self.abs_thresh(img, thresh=(20,100))
+        img_hls = self.hls_thresh(img, thresh=(90,255))
+        out = np.zeros_like(img_abs)
+        out[(img_abs > 0) | (img_hls > 0)] = 1
+        return out
 
 
     def process_img(self, img, draw=True):
@@ -269,3 +273,5 @@ class LaneLine():
         clip = VideoFileClip(video)
         new_clip = clip.fl_image(self.process_img)
         return new_clip
+
+ll = LaneLine()

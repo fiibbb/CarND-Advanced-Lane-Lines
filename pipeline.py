@@ -3,37 +3,38 @@ import cv2
 import glob
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+%matplotlib inline
 
 
 def corners_unwarp(cb_image, nx, ny, mtx, dist):
     undistorted = cv2.undistort(cb_image, mtx, dist, None, mtx)
     gray = cv2.cvtColor(undistorted, cv2.COLOR_RGB2GRAY)
     image_w, image_h = gray.shape[1], gray.shape[0]
-    
+
     ret, corners = cv2.findChessboardCorners(gray, (nx, ny), None)
     if not ret:
         print('WARNING: Failed to detect corners for image {} with nx {} and ny {}'.format(image_fname, nx, ny))
         return None, None
-    
+
     cv2.drawChessboardCorners(undistorted, (nx, ny), corners, ret)
-    
+
     src_tl = corners[0][0]
     src_tr = corners[nx-1][0]
     src_br = corners[-1][0]
     src_bl = corners[-nx][0]
-    
+
     offset = 200
     dst_tl = [offset, offset]
     dst_tr = [image_w-offset, offset]
     dst_br = [image_w-offset, image_h-offset]
     dst_bl = [offset, image_h-offset]
-    
+
     src = np.float32([src_tl, src_tr, src_br, src_bl])
     dst = np.float32([dst_tl, dst_tr, dst_br, dst_bl])
-    
+
     M = cv2.getPerspectiveTransform(src, dst)
     warped = cv2.warpPerspective(undistorted, M, gray.shape[::-1], flags=cv2.INTER_LINEAR)
-    
+
     return warped, M
 
 
@@ -46,7 +47,7 @@ def calibrate(fnames, nx, ny, img_w, img_h, verbose=False):
 
     if verbose:
         print('Calibration started...')
-    
+
     for fname in fnames:
         if verbose:
             print('Finding chesshboard in {}'.format(fname))
@@ -58,17 +59,17 @@ def calibrate(fnames, nx, ny, img_w, img_h, verbose=False):
                 print('Found chessboard in {}'.format(fname))
             imgpoints.append(corners)
             objpoints.append(objp)
-    
+
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, (img_w, img_h), None, None)
     if not ret:
         print('WARNING: Failed to calibrate camera')
         return None, None
 
     if verbose:
-        print('Calibration succeeded...')    
+        print('Calibration succeeded...')
 
     return mtx, dist
-    
+
 
 def hls_select(img, chan, thresh=(0, 255)):
     hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
@@ -108,90 +109,126 @@ def dir_thresh(img, ksize=3, thresh=(0, np.pi/2)):
     binary_output = np.zeros_like(dir_sobel)
     binary_output[(dir_sobel >= thresh[0]) & (dir_sobel <= thresh[1])] = 1
     return binary_output
-    
-    
-def window_img(img):
-    
-    # Output to be drawn
-    out_img = np.dstack((img, img, img))*255
-    
-    # Histogram of bottom half of img
-    histogram = np.sum(img[img.shape[0]//2:,:], axis=0)
 
-    # Left and right x-coord at the base
-    midpoint = histogram.shape[0] // 2
-    xl_base = np.argmax(histogram[:midpoint])
-    xr_base = np.argmax(histogram[midpoint:]) + midpoint
 
-    # Number of sliding windows and window height
-    n_windows = 9
-    window_h = img.shape[0] // n_windows
-    
+def window_img_with_fits(img, l_fit, r_fit, n_windows=9, margin=100):
+
     # All non-zero pixel locations
     nonzero = img.nonzero()
     nonzeroy = np.array(nonzero[0])
     nonzerox = np.array(nonzero[1])
-    
-    # Window parameters
-    margin = 100
-    minpix = 50
-    
+
+    l_lane_idxs = ((nonzerox > (l_fit[0]*(nonzeroy**2) + l_fit[1]*nonzeroy + l_fit[2] - margin)) & (nonzerox < (l_fit[0]*(nonzeroy**2) + l_fit[1]*nonzeroy + l_fit[2] + margin)))
+    r_lane_idxs = ((nonzerox > (r_fit[0]*(nonzeroy**2) + r_fit[1]*nonzeroy + r_fit[2] - margin)) & (nonzerox < (r_fit[0]*(nonzeroy**2) + r_fit[1]*nonzeroy + r_fit[2] + margin)))
+
+    lx = nonzerox[l_lane_idxs]
+    ly = nonzeroy[l_lane_idxs]
+    rx = nonzerox[r_lane_idxs]
+    ry = nonzeroy[r_lane_idxs]
+
+    new_l_fit = np.polyfit(ly, lx, 2)
+    new_r_fit = np.polyfit(ry, rx, 2)
+
+
+def find_fits(img, l_fit=None, r_fit=None, n_windows=9, margin=100, minpix=50, draw=False):
+
+    # All non-zero pixel locations
+    nonzero = img.nonzero()
+    nonzeroy = np.array(nonzero[0])
+    nonzerox = np.array(nonzero[1])
+
     # Indices found for pixels on lane lines
     l_lane_idxs = []
     r_lane_idxs = []
-    
-    # Sliding window loop
 
-    xl_current = xl_base
-    xr_current = xr_base
+    # Output to be drawn
+    out_img = None
+    if draw:
+        out_img = np.dstack((img, img, img))*255
 
-    for window in range(n_windows):
+    # If we are passed in fits from last frame, then skip sliding window
+    reuse_fits = not (l_fit is None or r_fit is None)
 
-        # Window boundaries
-        win_y_lo = img.shape[0] - window_h * (window + 1)
-        win_y_hi = img.shape[0] - window_h * window
-        
-        # Left lane window
-        win_xl_lo = xl_current - margin
-        win_xl_hi = xl_current + margin
-        
-        # Right lane window
-        win_xr_lo = xr_current - margin
-        win_xr_hi = xr_current + margin
-        
-        # Draw window on output
-        cv2.rectangle(out_img,(win_xl_lo,win_y_lo),(win_xl_hi,win_y_hi),(0,255,0), 2)
-        cv2.rectangle(out_img,(win_xr_lo,win_y_lo),(win_xr_hi,win_y_hi),(255,0,0), 2)
-        
-        # Find non-zero pixels within window
-        good_l_idxs = ((nonzeroy >= win_y_lo) & (nonzeroy < win_y_hi) & (nonzerox >= win_xl_lo) & (nonzerox < win_xl_hi)).nonzero()[0]
-        good_r_idxs = ((nonzeroy >= win_y_lo) & (nonzeroy < win_y_hi) & (nonzerox >= win_xr_lo) & (nonzerox < win_xr_hi)).nonzero()[0]
-        
-        # Append to list of found indices
-        l_lane_idxs.append(good_l_idxs)
-        r_lane_idxs.append(good_r_idxs)
-        
-        # If found more than minpix pixels, recenter next window on their mean position
-        if len(good_l_idxs) > minpix:
-            xl_current = np.int(np.mean(nonzerox[good_l_idxs]))
-        if len(good_r_idxs) > minpix:
-            xr_current = np.int(np.mean(nonzerox[good_r_idxs]))
-    
-    # Flatten
-    l_lane_idxs = np.concatenate(l_lane_idxs)
-    r_lane_idxs = np.concatenate(r_lane_idxs)
-    
+    if reuse_fits:
+        l_lane_idxs = ((nonzerox > (l_fit[0]*(nonzeroy**2) + l_fit[1]*nonzeroy + l_fit[2] - margin)) & (nonzerox < (l_fit[0]*(nonzeroy**2) + l_fit[1]*nonzeroy + l_fit[2] + margin)))
+        r_lane_idxs = ((nonzerox > (r_fit[0]*(nonzeroy**2) + r_fit[1]*nonzeroy + r_fit[2] - margin)) & (nonzerox < (r_fit[0]*(nonzeroy**2) + r_fit[1]*nonzeroy + r_fit[2] + margin)))
+    else:
+        # Histogram of bottom half of img
+        histogram = np.sum(img[img.shape[0]//2:,:], axis=0)
+        # Left and right x-coord at the base, and window height
+        midpoint = histogram.shape[0] // 2
+        xl_base = np.argmax(histogram[:midpoint])
+        xr_base = np.argmax(histogram[midpoint:]) + midpoint
+        window_h = img.shape[0] // n_windows
+        # Sliding window loop
+        xl_current = xl_base
+        xr_current = xr_base
+        for window in range(n_windows):
+            # Window boundaries
+            win_y_lo = img.shape[0] - window_h * (window + 1)
+            win_y_hi = img.shape[0] - window_h * window
+            # Left lane window
+            win_xl_lo = xl_current - margin
+            win_xl_hi = xl_current + margin
+            # Right lane window
+            win_xr_lo = xr_current - margin
+            win_xr_hi = xr_current + margin
+            # Find non-zero pixels within window
+            good_l_idxs = ((nonzeroy >= win_y_lo) & (nonzeroy < win_y_hi) & (nonzerox >= win_xl_lo) & (nonzerox < win_xl_hi)).nonzero()[0]
+            good_r_idxs = ((nonzeroy >= win_y_lo) & (nonzeroy < win_y_hi) & (nonzerox >= win_xr_lo) & (nonzerox < win_xr_hi)).nonzero()[0]
+            # Append to list of found indices
+            l_lane_idxs.append(good_l_idxs)
+            r_lane_idxs.append(good_r_idxs)
+            # If found more than minpix pixels, recenter next window on their mean position
+            if len(good_l_idxs) > minpix:
+                xl_current = np.int(np.mean(nonzerox[good_l_idxs]))
+            if len(good_r_idxs) > minpix:
+                xr_current = np.int(np.mean(nonzerox[good_r_idxs]))
+            # Draw window on output
+            if draw:
+                cv2.rectangle(out_img,(win_xl_lo,win_y_lo),(win_xl_hi,win_y_hi),(0,0,255), 5)
+                cv2.rectangle(out_img,(win_xr_lo,win_y_lo),(win_xr_hi,win_y_hi),(255,0,0), 5)
+        # Flatten
+        l_lane_idxs = np.concatenate(l_lane_idxs)
+        r_lane_idxs = np.concatenate(r_lane_idxs)
+
     # Gather all pixel locations on lane lines
     lx = nonzerox[l_lane_idxs]
     ly = nonzeroy[l_lane_idxs]
     rx = nonzerox[r_lane_idxs]
     ry = nonzeroy[r_lane_idxs]
-    
+
     # Fit polynomial for each lane
-    l_fit = np.polyfit(ly, lx, 2)
-    r_fit = np.polyfit(ry, rx, 2)
-    
-    return out_img, l_fit, r_fit
+    new_l_fit = np.polyfit(ly, lx, 2)
+    new_r_fit = np.polyfit(ry, rx, 2)
+
+    if draw:
+        # Draw pixels of detected lane lines
+        out_img[nonzeroy[l_lane_idxs], nonzerox[l_lane_idxs]] = [0,0,255]
+        out_img[nonzeroy[r_lane_idxs], nonzerox[r_lane_idxs]] = [255,0,0]
+        # Draw fitted lane lines
+        ploty = np.linspace(0, img.shape[0]-1, img.shape[0])
+        l_fit_x = new_l_fit[0] * ploty ** 2 + new_l_fit[1] * ploty + new_l_fit[2]
+        r_fit_x = new_r_fit[0] * ploty ** 2 + new_r_fit[1] * ploty + new_r_fit[2]
+        # window_img, used to add a weighted layer to out_img
+        window_img = np.zeros_like(out_img)
+        l_line_window1 = np.array([np.transpose(np.vstack([l_fit_x - margin, ploty]))])
+        l_line_window2 = np.array([np.flipud(np.transpose(np.vstack([l_fit_x + margin, ploty])))])
+        l_line_pts = np.hstack((l_line_window1, l_line_window2))
+        r_line_window1 = np.array([np.transpose(np.vstack([r_fit_x - margin, ploty]))])
+        r_line_window2 = np.array([np.flipud(np.transpose(np.vstack([r_fit_x + margin, ploty])))])
+        r_line_pts = np.hstack((r_line_window1, r_line_window2))
+        cv2.fillPoly(window_img, np.int_([l_line_pts]), (0,255, 0))
+        cv2.fillPoly(window_img, np.int_([r_line_pts]), (0,255, 0))
+        out_img = cv2.addWeighted(out_img, 1, window_img, 0.3, 0)
+        # Plot the above two lines
+        plt.imshow(out_img)
+        plt.plot(l_fit_x, ploty, color='yellow')
+        plt.plot(r_fit_x, ploty, color='yellow')
+        plt.xlim(0, img_w)
+        plt.ylim(img_h, 0)
+
+    return new_l_fit, new_r_fit, out_img
 
 
 # Calculate calibration parameters
@@ -213,7 +250,7 @@ def undistort(img):
 def perspective(img):
     return cv2.warpPerspective(img, M, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR)
 
-def pipeline(img, thresh_f):
-    return window_img(perspective(thresh_f(undistort(img))))
+def pipeline(img, thresh_f, draw=False):
+    return find_fits(perspective(thresh_f(undistort(img))), draw=draw)
 
 print('Initialized')
